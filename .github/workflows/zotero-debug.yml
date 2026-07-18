@@ -1,0 +1,61 @@
+name: Zotero Debug
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect-zotero:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7.1.4
+
+      - name: Inspect Zotero library
+        env:
+          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY'
+          import os
+          from collections import Counter
+          from pyzotero import zotero
+
+          user_id = os.environ.get("ZOTERO_ID", "")
+          api_key = os.environ.get("ZOTERO_KEY", "")
+          print(f"ZOTERO_ID configured: {bool(user_id)}")
+          print(f"ZOTERO_KEY configured: {bool(api_key)}")
+          print(f"ZOTERO_ID looks numeric: {user_id.isdigit() if user_id else False}")
+
+          if not user_id or not api_key:
+              raise SystemExit("Missing ZOTERO_ID or ZOTERO_KEY secret.")
+
+          zot = zotero.Zotero(user_id, "user", api_key)
+          collections = zot.everything(zot.collections())
+          items = zot.everything(zot.items())
+
+          type_counts = Counter(item.get("data", {}).get("itemType", "<missing>") for item in items)
+          eligible_types = {"conferencePaper", "journalArticle", "preprint"}
+          eligible = [item for item in items if item.get("data", {}).get("itemType") in eligible_types]
+          eligible_with_abstract = [
+              item for item in eligible
+              if (item.get("data", {}).get("abstractNote") or "").strip()
+          ]
+
+          print(f"Collections readable: {len(collections)}")
+          print(f"Total Zotero items readable: {len(items)}")
+          print("Top item types:")
+          for item_type, count in type_counts.most_common(12):
+              print(f"  {item_type}: {count}")
+          print(f"Eligible paper items ({sorted(eligible_types)}): {len(eligible)}")
+          print(f"Eligible paper items with non-empty abstractNote: {len(eligible_with_abstract)}")
+
+          if len(items) == 0:
+              raise SystemExit("Zotero API connected, but this user library has 0 readable items.")
+          if len(eligible) == 0:
+              raise SystemExit("No conferencePaper/journalArticle/preprint items found. The app will report: No zotero papers found.")
+          if len(eligible_with_abstract) == 0:
+              raise SystemExit("Eligible paper items exist, but all have empty abstractNote. The app will report: No zotero papers found.")
+          PY
